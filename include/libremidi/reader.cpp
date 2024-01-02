@@ -30,6 +30,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
 #include <iostream>
+#include <bit>
 
 // File Parsing Validation Todo:
 // ==============================
@@ -61,7 +62,7 @@ namespace util
 {
 struct no_validator
 {
-  static inline bool validate_track([[maybe_unused]] const midi_track& track) { return true; }
+  static inline bool validate_track(const midi_track& /*track*/) { return true; }
 };
 
 struct validator
@@ -108,10 +109,9 @@ struct read_unchecked
 {
   // Read a MIDI-style variable-length integer (big-endian value in groups of 7 bits,
   // with top bit set to signify that another byte follows).
-  static inline void ensure_size([[maybe_unused]] const uint8_t* begin, [[maybe_unused]] const uint8_t* end,
-      [[maybe_unused]] int64_t needed) { }
+  static inline void ensure_size(const uint8_t* /*begin*/, const uint8_t* /*end*/, int64_t /*needed*/) { }
 
-  static inline uint32_t read_variable_length(uint8_t const*& data, [[maybe_unused]] uint8_t const* end)
+  static inline uint32_t read_variable_length(uint8_t const*& data, uint8_t const* /*end*/)
   {
     uint32_t result = 0;
     while (true)
@@ -130,7 +130,7 @@ struct read_unchecked
   }
 
   static inline void
-  read_bytes(midi_bytes& buffer, uint8_t const*& data, [[maybe_unused]] const uint8_t* end, const std::size_t num)
+  read_bytes(midi_bytes& buffer, uint8_t const*& data, const uint8_t* /*end*/, const std::size_t num)
   {
     buffer.reserve(buffer.size() + num);
     for (std::size_t i = 0; i < num; ++i)
@@ -138,33 +138,61 @@ struct read_unchecked
   }
 
   static inline void
-  read_bytes(midi_bytes& buffer, uint8_t const*& data, [[maybe_unused]] const uint8_t* end, const int num)
+  read_bytes(midi_bytes& buffer, uint8_t const*& data, const uint8_t* end, const int num)
   {
     read_bytes(buffer, data, end, static_cast<std::size_t>(num));
   }
 
-  static inline uint16_t read_uint16_be(uint8_t const*& data, [[maybe_unused]] const uint8_t* end)
+  template<typename T, size_t SIZE = sizeof(T)> requires std::integral<T> //|| std::floating_point<T>
+  static constexpr T read_be(std::span<const uint8_t, SIZE> data)
   {
-    uint16_t result = *data++ << 8u;
-    result += *data++;
+    if constexpr (SIZE == 1)
+    {
+      return static_cast<T>(data[0]);
+    }
+    constexpr auto BIT_COUNT = CHAR_BIT;
+    T result = 0;
+    if constexpr (std::endian::native == std::endian::little)
+    {
+      for(size_t current_byte = SIZE-1; const auto &index : data)
+      {
+        result += index << current_byte-- * BIT_COUNT;
+      }
+    }
+    else if constexpr (std::endian::native == std::endian::big)
+    {
+      for(size_t current_byte = 0; const auto &index : data)
+      {
+        result += index << current_byte++ * BIT_COUNT;
+      }
+    }
+    else
+    {
+      static_assert(std::endian::native == std::endian::little || std::endian::native == std::endian::big,
+        "System is mixed endian, special code needed to swap to big endian");
+    }
     return result;
   }
 
-  static inline uint32_t read_uint24_be(uint8_t const*& data, [[maybe_unused]] const uint8_t* end)
+  static inline uint16_t read_uint16_be(uint8_t const*& data, const uint8_t* /*end*/)
   {
-    uint32_t result = *data++ << 16u;
-    result += static_cast<uint32_t>(*data++ << 8u);
-    result += *data++;
-    return result;
+    const auto ret = read_be<uint16_t>(std::span<const uint8_t, 2>(data, 2));
+    data += 2;
+    return ret;
   }
 
-  static inline uint32_t read_uint32_be(uint8_t const*& data, [[maybe_unused]] const uint8_t* end)
+  static inline uint32_t read_uint24_be(uint8_t const*& data, const uint8_t* /*end*/)
   {
-    uint32_t result = *data++ << 24u;
-    result += static_cast<uint32_t>(*data++ << 16u);
-    result += static_cast<uint32_t>(*data++ << 8u);
-    result += *data++;
-    return result;
+    const auto ret = read_be<uint32_t>(std::span<const uint8_t, 3>(data, 3));
+    data += 3;
+    return ret;
+  }
+
+  static inline uint32_t read_uint32_be(uint8_t const*& data, const uint8_t* /*end*/)
+  {
+    const auto ret = read_be<uint32_t>(std::span<const uint8_t, 4>(data, 4));
+    data += 4;
+    return ret;
   }
 };
 
@@ -565,7 +593,7 @@ try
 #endif
     return parse_result::invalid;
   }
-  int trackCount = read_checked::read_uint16_be(dataPtr, dataEnd);
+  const int trackCount = read_checked::read_uint16_be(dataPtr, dataEnd);
   uint16_t timeDivision = read_checked::read_uint16_be(dataPtr, dataEnd);
 
   // CBB: deal with the SMPTE style time coding
@@ -584,7 +612,7 @@ try
   }
 
   startingTempo = 120.0f;             // midi default
-  ticksPerBeat = float(timeDivision); // ticks per beat (a beat is defined as a quarter note)
+  ticksPerBeat = static_cast<float>(timeDivision); // ticks per beat (a beat is defined as a quarter note)
 
   parse_result result = parse_result::validated;
 
@@ -735,11 +763,9 @@ auto reader::parse(const std::vector<uint8_t>& buffer) noexcept -> parse_result
   return parse(buffer.data(), buffer.size());
 }
 
-#if defined(LIBREMIDI_HAS_SPAN)
 LIBREMIDI_INLINE
 auto reader::parse(std::span<uint8_t> buffer) noexcept -> parse_result
 {
   return parse(buffer.data(), buffer.size());
 }
-#endif
 }

@@ -26,102 +26,38 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #if !defined(LIBREMIDI_HEADER_ONLY)
   #include <libremidi/writer.hpp>
 #endif
-#include <numeric>
 #include <ostream>
 #include <string>
-#include <utility>
+#include <concepts>
+#include <bit>
+#include <array>
 
 namespace libremidi
 {
 namespace util
 {
-static LIBREMIDI_INLINE std::ostream& write_uint16_be(std::ostream& out, uint16_t value)
+template<typename T> requires std::integral<T> || std::floating_point<T>
+static LIBREMIDI_INLINE std::ostream& write_be(std::ostream& out, const T &value)
 {
-  union
+  constexpr auto SIZE = sizeof(T);
+  if constexpr (SIZE == 1 || std::endian::native == std::endian::big)
   {
-    uint8_t bytes[2];
-    uint16_t v;
-  } data;
-  data.v = value;
-  out << data.bytes[1];
-  out << data.bytes[0];
-  return out;
-}
-
-[[maybe_unused]] static LIBREMIDI_INLINE std::ostream& write_int16_be(std::ostream& out, int16_t value)
-{
-  union
+    out << value;
+  }
+  else if constexpr (std::endian::native == std::endian::little)
   {
-    uint8_t bytes[2];
-    int16_t v;
-  } data;
-  data.v = value;
-  out << data.bytes[1];
-  out << data.bytes[0];
-  return out;
-}
-
-static LIBREMIDI_INLINE std::ostream& write_uint32_be(std::ostream& out, uint32_t value)
-{
-  union
+    using array_t = std::array<uint8_t, SIZE>;
+    const auto bytes = std::bit_cast<array_t>(value);
+    for (auto byte = bytes.crbegin(); byte != bytes.crend(); ++byte)
+    {
+      out << *byte;
+    }
+  }
+  else
   {
-    uint8_t bytes[4];
-    uint32_t v;
-  } data;
-  data.v = value;
-  out << data.bytes[3];
-  out << data.bytes[2];
-  out << data.bytes[1];
-  out << data.bytes[0];
-  return out;
-}
-
-[[maybe_unused]] static LIBREMIDI_INLINE std::ostream& write_int32_be(std::ostream& out, int32_t value)
-{
-  union
-  {
-    uint8_t bytes[4];
-    int32_t v;
-  } data;
-  data.v = value;
-  out << data.bytes[3];
-  out << data.bytes[2];
-  out << data.bytes[1];
-  out << data.bytes[0];
-  return out;
-}
-
-[[maybe_unused]] static LIBREMIDI_INLINE std::ostream& write_float_be(std::ostream& out, float value)
-{
-  union
-  {
-    uint8_t bytes[4];
-    float v;
-  } data;
-  data.v = value;
-  out << data.bytes[3];
-  out << data.bytes[2];
-  out << data.bytes[1];
-  out << data.bytes[0];
-  return out;
-}
-
-[[maybe_unused]] static LIBREMIDI_INLINE std::ostream& write_double_be(std::ostream& out, double value)
-{
-  union
-  {
-    uint8_t bytes[8];
-    double v;
-  } data;
-  data.v = value;
-  out << data.bytes[7];
-  out << data.bytes[6];
-  out << data.bytes[5];
-  out << data.bytes[4];
-  out << data.bytes[3];
-  out << data.bytes[2];
-  out << data.bytes[1];
-  out << data.bytes[0];
+    static_assert(std::endian::native == std::endian::little || std::endian::native == std::endian::big,
+      "System is mixed endian, special code needed to swap to big endian");
+  }
   return out;
 }
 
@@ -195,10 +131,10 @@ void writer::write(std::ostream& out) const
   out << 'T';
   out << 'h';
   out << 'd';
-  util::write_uint32_be(out, 6);
-  util::write_uint16_be(out, (tracks.size() == 1) ? 0 : 1);
-  util::write_uint16_be(out, static_cast<uint16_t>(tracks.size()));
-  util::write_uint16_be(out, ticksPerQuarterNote);
+  util::write_be<uint32_t>(out, 6u);
+  util::write_be<uint16_t>(out, (tracks.size() == 1) ? 0u : 1u);
+  util::write_be<uint16_t>(out, tracks.size());
+  util::write_be<uint16_t>(out, ticksPerQuarterNote);
 
   std::vector<uint8_t> trackRawData;
   for (const auto& event_list : tracks)
@@ -261,7 +197,7 @@ void writer::write(std::ostream& out) const
     out << 'T';
     out << 'r';
     out << 'k';
-    util::write_uint32_be(out, static_cast<uint32_t>(trackRawData.size()));
+    util::write_be(out, static_cast<uint32_t>(trackRawData.size()));
     out.write(reinterpret_cast<char*>(trackRawData.data()), static_cast<std::streamsize>(trackRawData.size()));
   }
 }
